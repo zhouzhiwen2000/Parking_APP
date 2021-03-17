@@ -8,6 +8,13 @@ import android.Manifest;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanResult;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -15,6 +22,8 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -29,6 +38,10 @@ import com.amap.api.location.AMapLocationListener;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+
+import static android.bluetooth.BluetoothGatt.GATT_SUCCESS;
+import static android.bluetooth.BluetoothProfile.STATE_CONNECTED;
 
 public class MainActivity extends Activity  implements AMapLocationListener {
     BluetoothAdapter mAdapter;
@@ -36,11 +49,16 @@ public class MainActivity extends Activity  implements AMapLocationListener {
     public AMapLocationClient mLocationClient = null;
     //声明定位回调监听器
     public AMapLocationClientOption mLocationOption = null;
+    private final BluetoothLeScanner scanner;
     public MainActivity() {
         mAdapter = BluetoothAdapter.getDefaultAdapter();
+        scanner  = mAdapter.getBluetoothLeScanner();
     }
     private double now_lat = 0;
     private double now_lon = 0;
+
+    private BluetoothGatt mGatt;
+    private boolean opened =false;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -69,18 +87,16 @@ public class MainActivity extends Activity  implements AMapLocationListener {
             //do something
         }
 
-        if (mAdapter.isDiscovering())
-        {
-            mAdapter.cancelDiscovery();
-        }
-        // 开启发现蓝牙设备
-        mAdapter.startDiscovery();
-        // 注册用以接收到已搜索到的蓝牙设备的receiver
-        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-        registerReceiver(mReceiver,filter);
-        // 注册搜索完时的receiver
-        filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
-        registerReceiver(mReceiver,filter);
+
+        Handler mHandler = new Handler();
+        scanner.startScan(mCallBack);
+//        mHandler.postDelayed(new Runnable() {
+//            @Override
+//            public void run() {
+//                scanner.stopScan(mCallBack);
+//            }
+//        }, 10000);
+
 
         //初始化定位
         mLocationClient = new AMapLocationClient(getApplicationContext());
@@ -109,35 +125,26 @@ public class MainActivity extends Activity  implements AMapLocationListener {
                 Navigation();
             }
         });
+        HandlerThread thread = new HandlerThread("MyHandlerThread");
+        thread.start();
+        mHandler = new Handler(thread.getLooper());
+        mHandler.post(new Runnable() {
+            //anonymous class
+                          @Override
+                          public void run() {
+                              while (!opened) {
+                              }
+                              Toast toast = Toast.makeText(MainActivity.this, "开锁成功", 3000);
+                              toast.show();
+                          }
+                      }
+        );
+
+
     }
 
-    private BroadcastReceiver mReceiver = new BroadcastReceiver()
-    {//anonymous class
-        @Override
-        public void onReceive(Context context, Intent intent)
-        {
-            String action = intent.getAction();
-            TextView  txt = findViewById(R.id.txt1);
-            if (action.equals(BluetoothDevice.ACTION_FOUND))
-            {
-                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                if (device.getBondState() != BluetoothDevice.BOND_BONDED)
-                {
-                    //list.add(device);
-                    txt.setText("fd1");
-                }
-                //mMyBluetoothAdapter.notifyDataSetChanged();
-            }
-            else if (action.equals(BluetoothAdapter.ACTION_DISCOVERY_FINISHED))
-            {
-                txt.setText("搜索蓝牙设备");
-            }
-        }
-    };
-
     private void Navigation() {
-        float j, w;
-        j=w=0;
+
         try {
             // 高德地图 先维度——后经度
             Intent intent = Intent
@@ -174,4 +181,49 @@ public class MainActivity extends Activity  implements AMapLocationListener {
             }
         }
     }
+    ScanCallback mCallBack = new ScanCallback(){
+        @Override
+        public void onScanResult(int callbackType, ScanResult result){
+            BluetoothDevice dev_get=result.getDevice();
+            TextView  txt = findViewById(R.id.txt1);
+            String addr=dev_get.getAddress();
+            txt.setText(addr);
+            if(addr.equals("b4:e6:2d:ee:6c:df")||addr.equals("B4:E6:2D:EE:6C:DF"))//need to get it from the server
+            {
+                scanner.stopScan(this);
+                dev_get.connectGatt(MainActivity.this,false,mGattCallback);
+            }
+        }
+    };
+    BluetoothGattCallback mGattCallback = new BluetoothGattCallback() {
+        //anonymous class
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            super.onConnectionStateChange(gatt, status, newState);
+            if(status == GATT_SUCCESS &&newState == STATE_CONNECTED) {
+                gatt.discoverServices();
+            }
+        }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            super.onServicesDiscovered(gatt, status);
+            if(status == GATT_SUCCESS) {
+                mGatt = gatt;
+                BluetoothGattService service = mGatt.getService(UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b"));//fixed value
+                BluetoothGattCharacteristic characteristic=service.getCharacteristic(UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8"));//fixed value
+                characteristic.setValue("password");//need to get it from the server
+                mGatt.writeCharacteristic(characteristic);
+            }
+        }
+
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            super.onCharacteristicWrite(gatt, characteristic, status);
+            if(status == GATT_SUCCESS)
+            {
+                opened=true;
+            }
+        }
+    };
 }
